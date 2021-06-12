@@ -80,16 +80,44 @@ class VAEencoder(nn.Module):
         )
         self.fc_mu = nn.Conv2d(NF * 8, NZ, 4, 1, 0, bias=False)
         self.fc_sigma = nn.Conv2d(NF * 8, NZ, 4, 1, 0, bias= False)
+        self.tanh = nn.Tanh()
 
     def forward(self, X):
         feature = self.feature_extract(X)
         mu = self.fc_mu(feature)
         sigma = self.fc_sigma(feature)
+        # mu = self.tanh(mu)
+        # sigma = self.tanh(sigma)
         return mu, sigma
 
 class VAEdecoder(nn.Module):
     def __init__(self):
         super(VAEdecoder, self).__init__()
+        self.device = torch.device('cuda:0')
+        self.fc_mu = nn.ConvTranspose2d(NZ, NF * 8, 4, 1, 0, bias=False)
+        # self.fc_sigma = nn.ConvTranspose2d(NZ, NF * 8, 4, 1, 0, bias=False)
+        self.output = nn.Sequential(
+            nn.ConvTranspose2d(NF * 8, NF * 4, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(NF * 4),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(NF * 4, NF * 2, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(NF * 2),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(NF * 2, NF * 1, 4, 2, 1, bias = False),
+            nn.BatchNorm2d(NF * 1),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(NF, NC, 4, 2, 1, bias=False),
+            nn.Tanh()
+        )
+    
+    def forward(self, X):
+        mu = self.fc_mu(X)
+        mu = self.output(mu)
+        return mu
+
+class VAEdecoder2(nn.Module):
+    def __init__(self):
+        super(VAEdecoder2, self).__init__()
         self.device = torch.device('cuda:0')
         self.fc_mu = nn.ConvTranspose2d(NZ, NF * 8, 4, 1, 0, bias=False)
         self.fc_sigma = nn.ConvTranspose2d(NZ, NF * 8, 4, 1, 0, bias=False)
@@ -113,7 +141,7 @@ class VAEdecoder(nn.Module):
         return mu, sigma
 
 mseloss = nn.MSELoss()
-def myVAELoss(mu_q, sigma_q, mu_p, sigma_p, X):
+def myVAELoss(mu_q, sigma_q, mu_p, X, kl_weight=1.0):
     global mseloss
     # mu_q, sigma_q : batch * 100 * 1 * 1
     # mu_p, sigma_p, X : batch * 3 * 64 * 64
@@ -123,7 +151,8 @@ def myVAELoss(mu_q, sigma_q, mu_p, sigma_p, X):
     mu_q2 = mu_q ** 2
     sigma_q2 = sigma_q ** 2
     loss_1 = - torch.sum(torch.log(sigma_q2)) + torch.sum(sigma_q2) + torch.sum(mu_q2)
-    
+    loss_1 /= mu_q.shape[0]
+
     mu_p = mu_p.view(-1)
     # sigma_p = sigma_p.view(-1)
     X_ = X.view(-1)
@@ -132,8 +161,28 @@ def myVAELoss(mu_q, sigma_q, mu_p, sigma_p, X):
     # loss_2 = torch.sum(torch.log(sigma_p2)) + torch.sum(delta2 / sigma_p2)
     loss_2 = mseloss(X_, mu_p)
     
-    loss = loss_1 + loss_2
-    return loss
+    loss = kl_weight * loss_1 + loss_2
+    return loss, kl_weight * loss_1, loss_2
+
+def myVAELoss2(mu_q, sigma_q, mu_p, sigma_p, X, kl_weight=1.0, eps=1e-2):
+    mu_q = mu_q.view(-1)
+    sigma_q = sigma_q.view(-1)
+    mu_q2 = mu_q ** 2
+    sigma_q2 = sigma_q ** 2
+    loss_1 = - torch.sum(torch.log(sigma_q2)) + torch.sum(sigma_q2) + torch.sum(mu_q2)
+    loss_1 /= mu_q.shape[0]
+
+    mu_p = mu_p.view(-1)
+    sigma_p = sigma_p.view(-1)
+    X_ = X.view(-1)
+    delta2 = (X_ - mu_p) ** 2
+    sigma_p2 = sigma_p ** 2 + eps
+    loss_2 = torch.sum(torch.log(sigma_p2)) + torch.sum(delta2 / sigma_p2)
+    loss_2 /= mu_q.shape[0]
+    # loss_2 = mseloss(X_, mu_p)
+    
+    loss = kl_weight * loss_1 + loss_2
+    return loss, kl_weight * loss_1, loss_2
 
 def weights_init(m):
     classname = m.__class__.__name__
